@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log"
+	"os"
 	"strconv"
 	"time"
 
@@ -96,6 +98,13 @@ func PincodeHandler(c *fiber.Ctx) error {
 }
 
 func main() {
+
+	port := os.Getenv("PORT")
+
+	if port == "" {
+		log.Fatal("$PORT must be set")
+	}
+
 	app := fiber.New(fiber.Config{
 		GETOnly:       true,
 		CaseSensitive: true,
@@ -105,9 +114,7 @@ func main() {
 		Immutable:     true,
 	})
 
-	app.Static(`/`, "./public")
-
-	app.Use(favicon.New(favicon.Config{File: "./public/favicon.ico"}))
+	app.Static(`/static`, "./public")
 	app.Use(etag.New())
 	app.Use(limiter.New(limiter.Config{
 		Next: func(c *fiber.Ctx) bool {
@@ -125,8 +132,16 @@ func main() {
 		},
 	}))
 
+	app.Use(favicon.New(favicon.Config{File: "./public/favicon.ico"}))
+
 	api := app.Group("/api")
 	api.Get("/pincode/:pincode", PincodeHandler)
 
-	app.Listen(":3000")
+	app.Get("**", func(c *fiber.Ctx) error {
+		res, _ := json.Marshal(Response{OK: false, Message: "Invalid Request"})
+		c.SendStatus(fiber.StatusNotFound)
+		return c.Send(res)
+	})
+
+	app.Listen(":" + port)
 }
