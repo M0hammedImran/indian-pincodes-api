@@ -59,6 +59,26 @@ func IndexOf(a []Pincode, x int) int {
 var InvalidPincodeMessage = Response{OK: false, Message: "Invalid Pincode"}
 var RecordNotFoundMessage = Response{OK: false, Message: "Record Not Found"}
 
+var RateLimiter = limiter.New(limiter.Config{
+	Next:         func(c *fiber.Ctx) bool { return c.IP() == "127.0.0.1" },
+	Max:          5,
+	Expiration:   30 * time.Second,
+	KeyGenerator: func(c *fiber.Ctx) string { return c.Get("x-forwarded-for") },
+	LimitReached: func(c *fiber.Ctx) error {
+		c.SendStatus(fiber.StatusTooManyRequests)
+		return c.JSON(Response{OK: false, Message: "Rate Limit Reached"})
+	},
+})
+
+var FiberConfig = fiber.Config{
+	GETOnly:       true,
+	CaseSensitive: true,
+	StrictRouting: true,
+	ServerHeader:  "Fiber",
+	AppName:       "Indian Pincode",
+	Immutable:     true,
+}
+
 func PincodeHandler(c *fiber.Ctx) error {
 	c.Response().Header.EnableNormalizing()
 
@@ -75,72 +95,42 @@ func PincodeHandler(c *fiber.Ctx) error {
 
 	_pincode := c.Params("pincode")
 	if len(_pincode) != 6 {
-		res, _ := json.Marshal(InvalidPincodeMessage)
-		return c.Send(res)
+		return c.JSON(InvalidPincodeMessage)
 	}
 
 	i, err := strconv.Atoi(_pincode)
 	if err != nil {
 		fmt.Println(err)
-		res, _ := json.Marshal(InvalidPincodeMessage)
-		return c.Send(res)
+		return c.JSON(InvalidPincodeMessage)
 	}
 
 	pincodes := GetPincode()
 	idx := IndexOf(pincodes, i)
 	if idx == -1 {
-		res, _ := json.Marshal(RecordNotFoundMessage)
-		return c.Send(res)
+		return c.JSON(RecordNotFoundMessage)
 	}
 
-	res, _ := json.Marshal(Response{Data: &pincodes[idx], OK: true, Message: "Success"})
-	return c.Send(res)
+	return c.JSON(Response{Data: &pincodes[idx], OK: true, Message: "Success"})
 }
 
 func main() {
-
 	port := os.Getenv("PORT")
-
 	if port == "" {
 		log.Fatal("$PORT must be set")
 	}
 
-	app := fiber.New(fiber.Config{
-		GETOnly:       true,
-		CaseSensitive: true,
-		StrictRouting: true,
-		ServerHeader:  "Fiber",
-		AppName:       "Indian Pincode",
-		Immutable:     true,
-	})
-
+	app := fiber.New(FiberConfig)
 	app.Static(`/static`, "./public")
 	app.Use(etag.New())
-	app.Use(limiter.New(limiter.Config{
-		Next: func(c *fiber.Ctx) bool {
-			return c.IP() == "127.0.0.1"
-		},
-		Max:        5,
-		Expiration: 30 * time.Second,
-		KeyGenerator: func(c *fiber.Ctx) string {
-			return c.Get("x-forwarded-for")
-		},
-		LimitReached: func(c *fiber.Ctx) error {
-			res, _ := json.Marshal(Response{OK: false, Message: "Rate Limit Reached"})
-			c.SendStatus(fiber.StatusTooManyRequests)
-			return c.Send(res)
-		},
-	}))
-
+	app.Use(RateLimiter)
 	app.Use(favicon.New(favicon.Config{File: "./public/favicon.ico"}))
 
-	api := app.Group("/api")
+	api := app.Group("/api/v1")
 	api.Get("/pincode/:pincode", PincodeHandler)
 
 	app.Get("**", func(c *fiber.Ctx) error {
-		res, _ := json.Marshal(Response{OK: false, Message: "Invalid Request"})
 		c.SendStatus(fiber.StatusNotFound)
-		return c.Send(res)
+		return c.JSON(Response{OK: false, Message: "Invalid Request"})
 	})
 
 	app.Listen(":" + port)
