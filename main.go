@@ -5,14 +5,18 @@ import (
 	"fmt"
 	"io/ioutil"
 	"strconv"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/etag"
+	"github.com/gofiber/fiber/v2/middleware/favicon"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
 )
 
 type Response struct {
-	Data    Pincode `json:"data"`
-	OK      bool    `json:"ok"`
-	Message string  `json:"message"`
+	Data    *Pincode `json:"data"`
+	OK      bool     `json:"ok"`
+	Message string   `json:"message"`
 }
 
 type Pincode struct {
@@ -25,7 +29,7 @@ type Pincode struct {
 func GetPincode() []Pincode {
 	pincodes := []Pincode{}
 
-	content, err := ioutil.ReadFile("pincode.json")
+	content, err := ioutil.ReadFile("./public/pincode.json")
 	if err != nil {
 		fmt.Println(err)
 		return pincodes
@@ -39,6 +43,7 @@ func GetPincode() []Pincode {
 
 	return pincodes
 }
+
 func IndexOf(a []Pincode, x int) int {
 	for i, n := range a {
 		if x == n.Pincode {
@@ -48,6 +53,9 @@ func IndexOf(a []Pincode, x int) int {
 
 	return -1
 }
+
+var InvalidPincodeMessage = Response{OK: false, Message: "Invalid Pincode"}
+var RecordNotFoundMessage = Response{OK: false, Message: "Record Not Found"}
 
 func PincodeHandler(c *fiber.Ctx) error {
 	c.Response().Header.EnableNormalizing()
@@ -65,26 +73,25 @@ func PincodeHandler(c *fiber.Ctx) error {
 
 	_pincode := c.Params("pincode")
 	if len(_pincode) != 6 {
-		res, _ := json.Marshal(Response{OK: false, Message: "Invalid Pincode"})
+		res, _ := json.Marshal(InvalidPincodeMessage)
 		return c.Send(res)
 	}
 
 	i, err := strconv.Atoi(_pincode)
 	if err != nil {
 		fmt.Println(err)
-		res, _ := json.Marshal(Response{OK: false, Message: "Invalid Pincode"})
+		res, _ := json.Marshal(InvalidPincodeMessage)
 		return c.Send(res)
 	}
 
 	pincodes := GetPincode()
 	idx := IndexOf(pincodes, i)
 	if idx == -1 {
-		res, _ := json.Marshal(Response{OK: false, Message: "Record Not Found"})
+		res, _ := json.Marshal(RecordNotFoundMessage)
 		return c.Send(res)
 	}
 
-	res, _ := json.Marshal(Response{Data: pincodes[idx], OK: true, Message: "Success"})
-
+	res, _ := json.Marshal(Response{Data: &pincodes[idx], OK: true, Message: "Success"})
 	return c.Send(res)
 }
 
@@ -98,8 +105,27 @@ func main() {
 		Immutable:     true,
 	})
 
-	api := app.Group("/api")
+	app.Static(`/`, "./public")
 
+	app.Use(favicon.New(favicon.Config{File: "./public/favicon.ico"}))
+	app.Use(etag.New())
+	app.Use(limiter.New(limiter.Config{
+		Next: func(c *fiber.Ctx) bool {
+			return c.IP() == "127.0.0.1"
+		},
+		Max:        5,
+		Expiration: 30 * time.Second,
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return c.Get("x-forwarded-for")
+		},
+		LimitReached: func(c *fiber.Ctx) error {
+			res, _ := json.Marshal(Response{OK: false, Message: "Rate Limit Reached"})
+			c.SendStatus(fiber.StatusTooManyRequests)
+			return c.Send(res)
+		},
+	}))
+
+	api := app.Group("/api")
 	api.Get("/pincode/:pincode", PincodeHandler)
 
 	app.Listen(":3000")
